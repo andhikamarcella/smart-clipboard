@@ -1,6 +1,3 @@
-// Smart Admin Clipboard - MV3 Service Worker
-// Central source of truth for clipboard storage and validation.
-
 const STORAGE_KEYS = {
   CLIPBOARD_ITEMS: 'clipboardItems',
   INVOICE_COUNTERS: 'invoiceCounters',
@@ -8,14 +5,14 @@ const STORAGE_KEYS = {
 };
 
 const MAX_ITEMS = 50;
-const MIN_TEXT_LENGTH = 2;
+const MIN_LENGTH = 2;
 
 self.addEventListener('activate', () => {
   console.log('[SAC][BG] Service worker activated');
 });
 
-chrome.runtime.onInstalled.addListener(async (details) => {
-  console.log('[SAC][BG] onInstalled:', details.reason);
+chrome.runtime.onInstalled.addListener(async () => {
+  console.log('[SAC][BG] onInstalled');
   await ensureDefaults();
 });
 
@@ -25,21 +22,26 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('[SAC][BG] onMessage received:', message?.type, 'from', sender?.url || 'extension');
+  console.log('[SAC][BG] message received:', message?.type, 'from', sender?.url || 'extension');
 
   if (!message || typeof message.type !== 'string') {
-    sendResponse({ ok: false, error: 'Invalid message shape.' });
+    sendResponse({ ok: false, error: 'Invalid message.' });
+    return false;
+  }
+
+  if (message.type === 'PING_CONTENT') {
+    sendResponse({ ok: true, data: { connected: true } });
     return false;
   }
 
   if (message.type === 'SAVE_CLIPBOARD') {
     (async () => {
       try {
-        const result = await saveClipboardItem(message.payload?.text, message.payload?.source || 'content');
+        const result = await saveClipboardItem(message.payload?.text, message.payload?.source || 'unknown');
         sendResponse({ ok: true, data: result });
       } catch (error) {
-        console.error('[SAC][BG] SAVE_CLIPBOARD failed:', error);
-        sendResponse({ ok: false, error: error.message || 'Failed to save clipboard item.' });
+        console.error('[SAC][BG] SAVE_CLIPBOARD error:', error);
+        sendResponse({ ok: false, error: error.message || 'Failed to save clipboard.' });
       }
     })();
     return true;
@@ -51,58 +53,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const items = await getClipboardItems();
         sendResponse({ ok: true, data: items });
       } catch (error) {
-        console.error('[SAC][BG] GET_CLIPBOARD_HISTORY failed:', error);
-        sendResponse({ ok: false, error: error.message || 'Failed to fetch clipboard history.' });
+        console.error('[SAC][BG] GET_CLIPBOARD_HISTORY error:', error);
+        sendResponse({ ok: false, error: error.message || 'Failed to get history.' });
       }
     })();
     return true;
   }
 
-  if (message.type === 'GENERATE_INVOICE') {
-    (async () => {
-      try {
-        const invoice = await generateInvoiceNumber();
-        sendResponse({ ok: true, data: invoice });
-      } catch (error) {
-        console.error('[SAC][BG] GENERATE_INVOICE failed:', error);
-        sendResponse({ ok: false, error: error.message || 'Failed to generate invoice.' });
-      }
-    })();
-    return true;
-  }
-
-  sendResponse({ ok: false, error: `Unknown message type: ${message.type}` });
+  sendResponse({ ok: false, error: `Unknown type: ${message.type}` });
   return false;
 });
 
 async function ensureDefaults() {
   try {
-    const current = await chrome.storage.local.get([
+    const result = await chrome.storage.local.get([
       STORAGE_KEYS.CLIPBOARD_ITEMS,
       STORAGE_KEYS.INVOICE_COUNTERS,
       STORAGE_KEYS.THEME
     ]);
 
     const defaults = {};
-
-    if (!Array.isArray(current[STORAGE_KEYS.CLIPBOARD_ITEMS])) {
-      defaults[STORAGE_KEYS.CLIPBOARD_ITEMS] = [];
-    }
-
-    if (!current[STORAGE_KEYS.INVOICE_COUNTERS] || typeof current[STORAGE_KEYS.INVOICE_COUNTERS] !== 'object') {
+    if (!Array.isArray(result[STORAGE_KEYS.CLIPBOARD_ITEMS])) defaults[STORAGE_KEYS.CLIPBOARD_ITEMS] = [];
+    if (!result[STORAGE_KEYS.INVOICE_COUNTERS] || typeof result[STORAGE_KEYS.INVOICE_COUNTERS] !== 'object') {
       defaults[STORAGE_KEYS.INVOICE_COUNTERS] = {};
     }
+    if (typeof result[STORAGE_KEYS.THEME] !== 'string') defaults[STORAGE_KEYS.THEME] = 'light';
 
-    if (typeof current[STORAGE_KEYS.THEME] !== 'string') {
-      defaults[STORAGE_KEYS.THEME] = 'light';
-    }
-
-    if (Object.keys(defaults).length) {
+    if (Object.keys(defaults).length > 0) {
       await chrome.storage.local.set(defaults);
-      console.log('[SAC][BG] Defaults initialized:', defaults);
+      console.log('[SAC][BG] defaults initialized');
     }
   } catch (error) {
-    console.error('[SAC][BG] ensureDefaults error:', error);
+    console.error('[SAC][BG] ensureDefaults failed:', error);
   }
 }
 
@@ -111,35 +93,28 @@ async function getClipboardItems() {
 
   try {
     const result = await chrome.storage.local.get(STORAGE_KEYS.CLIPBOARD_ITEMS);
-    const items = result[STORAGE_KEYS.CLIPBOARD_ITEMS];
-    const normalized = Array.isArray(items) ? items : [];
-    console.log('[SAC][BG] Loaded clipboard items:', normalized.length);
-    return normalized;
+    const items = Array.isArray(result[STORAGE_KEYS.CLIPBOARD_ITEMS]) ? result[STORAGE_KEYS.CLIPBOARD_ITEMS] : [];
+    return items;
   } catch (error) {
-    console.error('[SAC][BG] getClipboardItems storage error:', error);
-    throw new Error('Could not read storage.');
+    console.error('[SAC][BG] getClipboardItems failed:', error);
+    throw new Error('Storage read failed.');
   }
 }
 
-async function saveClipboardItem(rawText, source = 'unknown') {
-  await ensureDefaults();
-
-  const text = sanitizeText(rawText);
+async function saveClipboardItem(rawText, source) {
+  const text = sanitize(rawText);
 
   if (!text) {
-    console.log('[SAC][BG] Skipped save (empty text) from', source);
     return { saved: false, reason: 'empty' };
   }
 
-  if (text.length < MIN_TEXT_LENGTH) {
-    console.log('[SAC][BG] Skipped save (too short) from', source, 'text:', text);
+  if (text.length < MIN_LENGTH) {
     return { saved: false, reason: 'too_short' };
   }
 
-  const existing = await getClipboardItems();
+  const current = await getClipboardItems();
 
-  if (existing[0] && existing[0].text === text) {
-    console.log('[SAC][BG] Skipped save (duplicate consecutive) from', source);
+  if (current[0] && current[0].text === text) {
     return { saved: false, reason: 'duplicate_consecutive' };
   }
 
@@ -152,52 +127,21 @@ async function saveClipboardItem(rawText, source = 'unknown') {
     source
   };
 
-  const merged = [item, ...existing];
-  const pinned = merged.filter((entry) => entry?.pinned);
-  const unpinned = merged.filter((entry) => !entry?.pinned);
-  const finalList = [...pinned, ...unpinned].slice(0, MAX_ITEMS);
+  const next = [item, ...current].slice(0, MAX_ITEMS);
 
   try {
-    await chrome.storage.local.set({ [STORAGE_KEYS.CLIPBOARD_ITEMS]: finalList });
-    console.log('[SAC][BG] Storage updated. Total items:', finalList.length);
+    await chrome.storage.local.set({ [STORAGE_KEYS.CLIPBOARD_ITEMS]: next });
+    console.log('[SAC][BG] storage updated, total:', next.length);
     return { saved: true, item };
   } catch (error) {
-    console.error('[SAC][BG] saveClipboardItem storage write error:', error);
-    throw new Error('Could not write storage.');
+    console.error('[SAC][BG] save storage failed:', error);
+    throw new Error('Storage write failed.');
   }
 }
 
-async function generateInvoiceNumber() {
-  await ensureDefaults();
-
-  try {
-    const result = await chrome.storage.local.get(STORAGE_KEYS.INVOICE_COUNTERS);
-    const counters = result[STORAGE_KEYS.INVOICE_COUNTERS] || {};
-
-    const dateKey = formatDateKey(new Date());
-    counters[dateKey] = Number(counters[dateKey] || 0) + 1;
-
-    await chrome.storage.local.set({ [STORAGE_KEYS.INVOICE_COUNTERS]: counters });
-
-    const invoice = `INV-${dateKey}-${String(counters[dateKey]).padStart(3, '0')}`;
-    console.log('[SAC][BG] Invoice generated:', invoice);
-    return invoice;
-  } catch (error) {
-    console.error('[SAC][BG] generateInvoiceNumber error:', error);
-    throw new Error('Invoice generation failed.');
-  }
-}
-
-function sanitizeText(value) {
+function sanitize(value) {
   return String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 5000);
-}
-
-function formatDateKey(date) {
-  const yyyy = date.getFullYear();
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  const dd = String(date.getDate()).padStart(2, '0');
-  return `${yyyy}${mm}${dd}`;
 }

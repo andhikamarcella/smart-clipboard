@@ -2,13 +2,12 @@
   "manifest_version": 3,
   "name": "Smart Admin Clipboard",
   "description": "Clipboard history manager + admin helper tools for daily productivity.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "permissions": [
     "storage",
     "scripting",
     "activeTab",
-    "clipboardRead",
-    "clipboardWrite"
+    "clipboardRead"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -29,7 +28,8 @@
   "content_scripts": [
     {
       "matches": [
-        "<all_urls>"
+        "http://*/*",
+        "https://*/*"
       ],
       "js": [
         "content.js"
