@@ -7,38 +7,48 @@ const MAX_CLIPBOARD_ITEMS = 50;
 
 const EMAIL_TEMPLATES = {
   paymentReminder:
-    'Subject: Friendly Payment Reminder\n\nHello [Name],\n\nThis is a kind reminder that invoice [Invoice #] is due on [Date]. Please let us know once payment has been made.\n\nBest regards,\n[Your Name]',
+    'Subject: Friendly Payment Reminder\n\nHello [Name],\n\nThis is a kind reminder that invoice [Invoice #] is due on [Date]. Please confirm once paid.\n\nBest regards,\n[Your Name]',
   interviewInvitation:
-    'Subject: Interview Invitation\n\nHi [Candidate Name],\n\nWe are pleased to invite you to an interview for the [Role] position on [Date/Time]. Please confirm your availability.\n\nRegards,\n[Hiring Team]',
+    'Subject: Interview Invitation\n\nHi [Candidate Name],\n\nWe would like to invite you for an interview for the [Role] position at [Date/Time]. Please confirm availability.\n\nRegards,\n[Hiring Team]',
   orderConfirmation:
-    'Subject: Order Confirmation\n\nHello [Customer Name],\n\nThank you for your order #[Order ID]. Your order has been confirmed and is being prepared for shipment.\n\nCheers,\n[Support Team]'
+    'Subject: Order Confirmation\n\nHello [Customer Name],\n\nThank you for your order #[Order ID]. Your order has been confirmed and is now being prepared.\n\nBest,\n[Support Team]'
 };
 
 const state = {
   clipboardItems: [],
-  activeTab: 'clipboard',
-  search: ''
+  search: '',
+  activeTab: 'clipboard'
 };
 
 const el = {};
+let storageChangeHandler = null;
 
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   mapElements();
+  bindTabEvents();
   bindBaseEvents();
   bindAdminToolsEvents();
   bindKeyboardShortcuts();
+  bindStorageSync();
+
   await hydrateTheme();
   await loadClipboardItems();
-  renderClipboardList();
+
+  renderClipboard();
   renderTemplateButtons();
   updateCalculator();
 }
 
+window.addEventListener('unload', () => {
+  if (storageChangeHandler) {
+    chrome.storage.onChanged.removeListener(storageChangeHandler);
+  }
+});
+
 function mapElements() {
   Object.assign(el, {
-    app: document.getElementById('app'),
     tabs: Array.from(document.querySelectorAll('.tab-btn')),
     panels: {
       clipboard: document.getElementById('clipboardPanel'),
@@ -50,7 +60,7 @@ function mapElements() {
     exportBtn: document.getElementById('exportBtn'),
     importInput: document.getElementById('importInput'),
     clipboardList: document.getElementById('clipboardList'),
-    emptyClipboard: document.getElementById('emptyClipboard'),
+    emptyState: document.getElementById('emptyState'),
     priceInput: document.getElementById('priceInput'),
     discountInput: document.getElementById('discountInput'),
     taxInput: document.getElementById('taxInput'),
@@ -65,22 +75,25 @@ function mapElements() {
   });
 }
 
-function bindBaseEvents() {
-  el.tabs.forEach((tabBtn) => {
-    tabBtn.addEventListener('click', () => switchTab(tabBtn.dataset.tab));
+function bindTabEvents() {
+  el.tabs.forEach((tab) => {
+    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
   });
+}
 
+function bindBaseEvents() {
   el.themeToggle.addEventListener('click', toggleTheme);
+
   el.searchInput.addEventListener('input', (event) => {
     state.search = event.target.value.toLowerCase().trim();
-    renderClipboardList();
+    renderClipboard();
   });
 
   el.clearAllBtn.addEventListener('click', async () => {
     if (!confirm('Clear all clipboard items?')) return;
     state.clipboardItems = [];
     await persistClipboardItems();
-    renderClipboardList();
+    renderClipboard();
     toast('Clipboard history cleared', 'success');
   });
 
@@ -99,15 +112,17 @@ function bindAdminToolsEvents() {
       toast(response?.error || 'Could not generate invoice', 'error');
       return;
     }
+
     el.invoiceOutput.value = response.data;
-    toast('Invoice number generated', 'success');
+    toast('Invoice generated', 'success');
   });
 
   el.copyInvoiceBtn.addEventListener('click', async () => {
     if (!el.invoiceOutput.value) {
-      toast('Generate an invoice number first', 'error');
+      toast('Generate invoice first', 'error');
       return;
     }
+
     await copyToClipboard(el.invoiceOutput.value, 'Invoice copied');
   });
 
@@ -117,6 +132,7 @@ function bindAdminToolsEvents() {
       toast('Template is empty', 'error');
       return;
     }
+
     await copyToClipboard(text, 'Template copied');
   });
 }
@@ -130,20 +146,24 @@ function bindKeyboardShortcuts() {
       switchTab('clipboard');
       el.searchInput.focus();
       el.searchInput.select();
+      return;
     }
 
     if (ctrlOrCmd && event.key === '1') {
       event.preventDefault();
       switchTab('clipboard');
+      return;
     }
 
     if (ctrlOrCmd && event.key === '2') {
       event.preventDefault();
       switchTab('admin');
+      return;
     }
 
-    if (event.key.toLowerCase() === 't' && !ctrlOrCmd) {
+    if (!ctrlOrCmd && event.key.toLowerCase() === 't') {
       toggleTheme();
+      return;
     }
 
     if (ctrlOrCmd && event.shiftKey && event.key.toLowerCase() === 'c') {
@@ -155,16 +175,41 @@ function bindKeyboardShortcuts() {
   });
 }
 
+function bindStorageSync() {
+  storageChangeHandler = (changes, areaName) => {
+    if (areaName !== 'local') return;
+
+    if (changes[STORAGE_KEYS.CLIPBOARD_ITEMS]) {
+      const oldValue = Array.isArray(changes[STORAGE_KEYS.CLIPBOARD_ITEMS].oldValue)
+        ? changes[STORAGE_KEYS.CLIPBOARD_ITEMS].oldValue
+        : [];
+      const newValue = Array.isArray(changes[STORAGE_KEYS.CLIPBOARD_ITEMS].newValue)
+        ? changes[STORAGE_KEYS.CLIPBOARD_ITEMS].newValue
+        : [];
+
+      state.clipboardItems = newValue;
+      renderClipboard();
+
+      if (newValue.length > oldValue.length) {
+        toast('New clipboard item saved', 'success');
+      }
+    }
+  };
+
+  chrome.storage.onChanged.addListener(storageChangeHandler);
+}
+
 function switchTab(tabName) {
   state.activeTab = tabName;
+
   Object.entries(el.panels).forEach(([name, panel]) => {
     panel.classList.toggle('active', name === tabName);
   });
 
-  el.tabs.forEach((tabBtn) => {
-    const selected = tabBtn.dataset.tab === tabName;
-    tabBtn.classList.toggle('active', selected);
-    tabBtn.setAttribute('aria-selected', selected ? 'true' : 'false');
+  el.tabs.forEach((tab) => {
+    const active = tab.dataset.tab === tabName;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
   });
 }
 
@@ -175,8 +220,7 @@ async function hydrateTheme() {
 }
 
 async function toggleTheme() {
-  const root = document.documentElement;
-  const current = root.getAttribute('data-theme') || 'light';
+  const current = document.documentElement.getAttribute('data-theme') || 'light';
   const next = current === 'light' ? 'dark' : 'light';
   applyTheme(next);
   await chrome.storage.local.set({ [STORAGE_KEYS.THEME]: next });
@@ -188,36 +232,48 @@ function applyTheme(theme) {
 }
 
 async function loadClipboardItems() {
-  const result = await chrome.storage.local.get(STORAGE_KEYS.CLIPBOARD_ITEMS);
-  state.clipboardItems = Array.isArray(result[STORAGE_KEYS.CLIPBOARD_ITEMS])
-    ? result[STORAGE_KEYS.CLIPBOARD_ITEMS]
-    : [];
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'GET_CLIPBOARD_HISTORY' });
+    if (response?.ok && Array.isArray(response.data)) {
+      state.clipboardItems = response.data;
+      return;
+    }
+
+    const fallback = await chrome.storage.local.get(STORAGE_KEYS.CLIPBOARD_ITEMS);
+    state.clipboardItems = Array.isArray(fallback[STORAGE_KEYS.CLIPBOARD_ITEMS])
+      ? fallback[STORAGE_KEYS.CLIPBOARD_ITEMS]
+      : [];
+  } catch (_error) {
+    state.clipboardItems = [];
+  }
 }
 
 async function persistClipboardItems() {
   const pinned = state.clipboardItems.filter((item) => item.pinned);
   const unpinned = state.clipboardItems.filter((item) => !item.pinned);
   state.clipboardItems = [...pinned, ...unpinned].slice(0, MAX_CLIPBOARD_ITEMS);
+
   await chrome.storage.local.set({ [STORAGE_KEYS.CLIPBOARD_ITEMS]: state.clipboardItems });
 }
 
-function renderClipboardList() {
+function renderClipboard() {
   const query = state.search;
   const items = state.clipboardItems.filter((item) => item.text.toLowerCase().includes(query));
 
   el.clipboardList.innerHTML = '';
 
-  if (!items.length) {
-    el.emptyClipboard.classList.remove('hidden');
+  if (items.length === 0) {
+    el.emptyState.classList.remove('hidden');
     return;
   }
 
-  el.emptyClipboard.classList.add('hidden');
+  el.emptyState.classList.add('hidden');
 
-  items.forEach((item) => {
-    const node = document.createElement('article');
-    node.className = `item ${item.pinned ? 'pinned' : ''}`;
-    node.innerHTML = `
+  for (const item of items) {
+    const card = document.createElement('article');
+    card.className = `item ${item.pinned ? 'pinned' : ''}`;
+
+    card.innerHTML = `
       <p class="item-text"></p>
       <div class="item-meta">
         <span>${item.pinned ? '📌 Pinned' : '📄 Clipboard'}</span>
@@ -230,28 +286,28 @@ function renderClipboardList() {
       </div>
     `;
 
-    node.querySelector('.item-text').textContent = truncate(item.text, 180);
+    card.querySelector('.item-text').textContent = truncate(item.text, 180);
 
-    node.querySelector('[data-action="copy"]').addEventListener('click', async () => {
+    card.querySelector('[data-action="copy"]').addEventListener('click', async () => {
       await copyToClipboard(item.text, 'Copied to clipboard');
     });
 
-    node.querySelector('[data-action="pin"]').addEventListener('click', async () => {
+    card.querySelector('[data-action="pin"]').addEventListener('click', async () => {
       item.pinned = !item.pinned;
       await persistClipboardItems();
-      renderClipboardList();
+      renderClipboard();
       toast(item.pinned ? 'Item pinned' : 'Item unpinned', 'success');
     });
 
-    node.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+    card.querySelector('[data-action="delete"]').addEventListener('click', async () => {
       state.clipboardItems = state.clipboardItems.filter((entry) => entry.id !== item.id);
       await persistClipboardItems();
-      renderClipboardList();
+      renderClipboard();
       toast('Item deleted', 'success');
     });
 
-    el.clipboardList.appendChild(node);
-  });
+    el.clipboardList.appendChild(card);
+  }
 }
 
 function updateCalculator() {
@@ -278,7 +334,7 @@ function renderTemplateButtons() {
     orderConfirmation: 'Order Confirmation'
   };
 
-  Object.entries(labels).forEach(([key, label]) => {
+  for (const [key, label] of Object.entries(labels)) {
     const button = document.createElement('button');
     button.className = 'ghost-btn';
     button.textContent = label;
@@ -287,20 +343,23 @@ function renderTemplateButtons() {
       toast(`${label} loaded`, 'success');
     });
     el.templateButtons.appendChild(button);
-  });
+  }
 
   el.templatePreview.value = EMAIL_TEMPLATES.paymentReminder;
 }
 
-async function exportClipboardJson() {
-  const blob = new Blob([JSON.stringify(state.clipboardItems, null, 2)], { type: 'application/json' });
+function exportClipboardJson() {
+  const blob = new Blob([JSON.stringify(state.clipboardItems, null, 2)], {
+    type: 'application/json'
+  });
+
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'smart-admin-clipboard-history.json';
-  a.click();
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'smart-admin-clipboard-history.json';
+  link.click();
   URL.revokeObjectURL(url);
-  toast('Clipboard history exported', 'success');
+  toast('Clipboard exported', 'success');
 }
 
 async function importClipboardJson(event) {
@@ -310,6 +369,7 @@ async function importClipboardJson(event) {
   try {
     const text = await file.text();
     const parsed = JSON.parse(text);
+
     if (!Array.isArray(parsed)) {
       throw new Error('JSON must be an array.');
     }
@@ -317,7 +377,7 @@ async function importClipboardJson(event) {
     const validated = parsed
       .map((item) => ({
         id: typeof item.id === 'string' ? item.id : `clip_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-        text: String(item.text || '').trim().slice(0, 5000),
+        text: String(item.text || '').replace(/\s+/g, ' ').trim().slice(0, 5000),
         pinned: Boolean(item.pinned),
         createdAt: Number(item.createdAt) || Date.now()
       }))
@@ -325,8 +385,8 @@ async function importClipboardJson(event) {
 
     state.clipboardItems = validated.slice(0, MAX_CLIPBOARD_ITEMS);
     await persistClipboardItems();
-    renderClipboardList();
-    toast('Clipboard history imported', 'success');
+    renderClipboard();
+    toast('Clipboard imported', 'success');
   } catch (error) {
     toast(`Import failed: ${error.message}`, 'error');
   } finally {
@@ -336,16 +396,17 @@ async function importClipboardJson(event) {
 
 function parseNumber(value, { min = -Infinity, max = Infinity } = {}) {
   if (value === '') return 0;
-  const num = Number(value);
-  if (!Number.isFinite(num) || num < min || num > max) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < min || number > max) {
     return null;
   }
-  return num;
+  return number;
 }
 
-function formatTimestamp(ts) {
-  const date = new Date(ts);
+function formatTimestamp(timestamp) {
+  const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return 'Unknown time';
+
   return date.toLocaleString([], {
     year: 'numeric',
     month: 'short',
@@ -355,16 +416,16 @@ function formatTimestamp(ts) {
   });
 }
 
-function truncate(text, max) {
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+function truncate(text, maxLength) {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
 }
 
-async function copyToClipboard(text, successMessage = 'Copied') {
+async function copyToClipboard(text, successMessage) {
   try {
     await navigator.clipboard.writeText(text);
     toast(successMessage, 'success');
   } catch (_error) {
-    toast('Copy failed. Check clipboard permissions.', 'error');
+    toast('Copy failed. Check clipboard permission.', 'error');
   }
 }
 
@@ -374,9 +435,9 @@ function toast(message, type = 'info') {
   node.textContent = message;
   el.toastContainer.appendChild(node);
 
-  window.setTimeout(() => {
+  setTimeout(() => {
     node.style.opacity = '0';
     node.style.transform = 'translateY(8px)';
-    window.setTimeout(() => node.remove(), 200);
+    setTimeout(() => node.remove(), 180);
   }, 2200);
 }

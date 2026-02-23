@@ -1,35 +1,59 @@
-// Captures copy events from editable contexts and sends to service worker.
+// Smart Admin Clipboard - content script
+// Captures copy events and forwards selected text to service worker.
 
-(function initClipboardCapture() {
-  document.addEventListener('copy', async () => {
+(() => {
+  const LOG_PREFIX = '[SAC][CONTENT]';
+  let isBound = false;
+
+  function init() {
+    if (isBound) {
+      return;
+    }
+
+    isBound = true;
+    document.addEventListener('copy', onCopy, { capture: true });
+    console.log(LOG_PREFIX, 'Copy listener attached on', window.location.href);
+  }
+
+  async function onCopy() {
     try {
-      const selectedText = getClipboardCandidateText();
-      if (!selectedText) {
+      // Required by spec: use window.getSelection().toString()
+      const selectedText = window.getSelection().toString();
+      const text = sanitizeText(selectedText);
+
+      if (!text) {
+        console.log(LOG_PREFIX, 'Copy ignored: empty selection');
         return;
       }
 
-      await chrome.runtime.sendMessage({
+      console.log(LOG_PREFIX, 'Copy captured:', text.slice(0, 80));
+
+      const response = await chrome.runtime.sendMessage({
         type: 'SAVE_CLIPBOARD',
-        payload: { text: selectedText }
+        payload: { text, url: window.location.href }
       });
+
+      if (response?.ok) {
+        if (response.data?.skipped) {
+          console.log(LOG_PREFIX, 'Skipped save:', response.data.reason);
+        } else {
+          console.log(LOG_PREFIX, 'Saved successfully');
+        }
+      } else {
+        console.warn(LOG_PREFIX, 'Save failed:', response?.error || 'Unknown error');
+      }
     } catch (error) {
-      // Silent fail: content scripts should never disrupt page behavior.
-      console.debug('Smart Admin Clipboard copy capture skipped:', error?.message);
-    }
-  });
-})();
-
-function getClipboardCandidateText() {
-  const active = document.activeElement;
-
-  if (active && (active.tagName === 'TEXTAREA' || (active.tagName === 'INPUT' && active.type === 'text'))) {
-    const start = active.selectionStart;
-    const end = active.selectionEnd;
-    if (typeof start === 'number' && typeof end === 'number' && end > start) {
-      return active.value.slice(start, end).trim();
+      // Never throw from content script event listeners.
+      console.error(LOG_PREFIX, 'Copy handler error:', error);
     }
   }
 
-  const selection = window.getSelection();
-  return selection ? selection.toString().trim() : '';
-}
+  function sanitizeText(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 5000);
+  }
+
+  init();
+})();
