@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Admin Clipboard</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app-header">
+        <h1>📋 Smart Admin Clipboard</h1>
+        <span id="connectionIndicator" class="status">Checking content script...</span>
+      </header>
+
+      <div class="toolbar">
+        <input id="searchInput" type="search" placeholder="Search clipboard history..." />
+        <button id="refreshBtn" class="ghost-btn">Refresh</button>
+      </div>
+
+      <div id="clipboardList" class="clipboard-list"></div>
+
+      <div id="emptyState" class="empty-state hidden">
+        <div class="illustration"></div>
+        <h3>No clipboard history yet</h3>
+        <p>Copy text on a website (Ctrl/Cmd+C or right-click Copy) then reopen popup.</p>
+      </div>
+    </div>
+
+    <div id="toastContainer" class="toast-container"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
