@@ -19,33 +19,47 @@
       </nav>
 
       <main>
-        <section class="tab-panel active" id="clipboardPanel">
+        <section id="clipboardPanel" class="tab-panel active">
           <div class="toolbar">
-            <input id="searchInput" type="search" placeholder="Search clipboard... (Ctrl/Cmd + F)" />
+            <input id="searchInput" type="search" placeholder="Search history... (Ctrl/Cmd+F)" />
             <button id="clearAllBtn" class="ghost-btn">Clear All</button>
           </div>
 
           <div class="toolbar toolbar-secondary">
             <button id="exportBtn" class="ghost-btn">Export JSON</button>
-            <label for="importInput" class="ghost-btn import-btn">Import JSON</label>
+            <label class="ghost-btn import-btn" for="importInput">Import JSON</label>
             <input id="importInput" type="file" hidden accept="application/json" />
+          </div>
+
+          <div class="debug-box">
+            <button id="testReadClipboardBtn">Test Read Clipboard</button>
+            <p id="clipboardReadResult" class="debug-result">Last read: (none)</p>
           </div>
 
           <div id="clipboardList" class="clipboard-list"></div>
           <div id="emptyState" class="empty-state hidden">
             <div class="illustration"></div>
             <h3>No clipboard history yet</h3>
-            <p>Copy text on any website to capture it here.</p>
+            <p>Copy text on a website, then open popup to view history.</p>
           </div>
         </section>
 
-        <section class="tab-panel" id="adminPanel">
+        <section id="adminPanel" class="tab-panel">
           <div class="card">
             <h2>💸 Discount & Tax Calculator</h2>
             <div class="grid-3">
-              <label>Price<input id="priceInput" type="number" min="0" step="0.01" placeholder="0.00" /></label>
-              <label>Discount %<input id="discountInput" type="number" min="0" max="100" step="0.01" placeholder="0" /></label>
-              <label>Tax %<input id="taxInput" type="number" min="0" max="100" step="0.01" placeholder="0" /></label>
+              <label>
+                Price
+                <input id="priceInput" type="number" min="0" step="0.01" placeholder="0.00" />
+              </label>
+              <label>
+                Discount %
+                <input id="discountInput" type="number" min="0" max="100" step="0.01" placeholder="0" />
+              </label>
+              <label>
+                Tax %
+                <input id="taxInput" type="number" min="0" max="100" step="0.01" placeholder="0" />
+              </label>
             </div>
             <p id="calcResult" class="result">Final Total: $0.00</p>
           </div>
@@ -62,7 +76,7 @@
           <div class="card">
             <h2>✉️ Quick Email Templates</h2>
             <div id="templateButtons" class="template-buttons"></div>
-            <textarea id="templatePreview" rows="6"></textarea>
+            <textarea id="templatePreview" rows="6" placeholder="Editable template preview..."></textarea>
             <div class="inline-actions end">
               <button id="copyTemplateBtn">Copy Template</button>
             </div>

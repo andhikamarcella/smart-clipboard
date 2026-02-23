@@ -1,5 +1,5 @@
-// Smart Admin Clipboard - Manifest V3 Service Worker
-// Handles clipboard persistence, dedupe rules, and popup-facing data APIs.
+// Smart Admin Clipboard - MV3 Service Worker
+// Central source of truth for clipboard storage and validation.
 
 const STORAGE_KEYS = {
   CLIPBOARD_ITEMS: 'clipboardItems',
@@ -7,7 +7,8 @@ const STORAGE_KEYS = {
   THEME: 'theme'
 };
 
-const MAX_CLIPBOARD_ITEMS = 50;
+const MAX_ITEMS = 50;
+const MIN_TEXT_LENGTH = 2;
 
 self.addEventListener('activate', () => {
   console.log('[SAC][BG] Service worker activated');
@@ -24,25 +25,23 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log('[SAC][BG] onMessage received:', message?.type, 'from', sender?.url || 'extension');
+
   if (!message || typeof message.type !== 'string') {
-    sendResponse({ ok: false, error: 'Invalid message format.' });
+    sendResponse({ ok: false, error: 'Invalid message shape.' });
     return false;
   }
-
-  console.log('[SAC][BG] Message received:', message.type, 'from', sender?.url || 'extension');
 
   if (message.type === 'SAVE_CLIPBOARD') {
     (async () => {
       try {
-        const saved = await saveClipboardText(message.payload?.text);
-        sendResponse({ ok: true, data: saved });
+        const result = await saveClipboardItem(message.payload?.text, message.payload?.source || 'content');
+        sendResponse({ ok: true, data: result });
       } catch (error) {
-        console.error('[SAC][BG] SAVE_CLIPBOARD error:', error);
-        sendResponse({ ok: false, error: error.message || 'Failed to save clipboard text.' });
+        console.error('[SAC][BG] SAVE_CLIPBOARD failed:', error);
+        sendResponse({ ok: false, error: error.message || 'Failed to save clipboard item.' });
       }
     })();
-
-    // Required for async sendResponse in MV3.
     return true;
   }
 
@@ -52,25 +51,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const items = await getClipboardItems();
         sendResponse({ ok: true, data: items });
       } catch (error) {
-        console.error('[SAC][BG] GET_CLIPBOARD_HISTORY error:', error);
-        sendResponse({ ok: false, error: error.message || 'Failed to load clipboard history.' });
+        console.error('[SAC][BG] GET_CLIPBOARD_HISTORY failed:', error);
+        sendResponse({ ok: false, error: error.message || 'Failed to fetch clipboard history.' });
       }
     })();
-
     return true;
   }
 
   if (message.type === 'GENERATE_INVOICE') {
     (async () => {
       try {
-        const invoiceNumber = await generateInvoiceNumber();
-        sendResponse({ ok: true, data: invoiceNumber });
+        const invoice = await generateInvoiceNumber();
+        sendResponse({ ok: true, data: invoice });
       } catch (error) {
-        console.error('[SAC][BG] GENERATE_INVOICE error:', error);
+        console.error('[SAC][BG] GENERATE_INVOICE failed:', error);
         sendResponse({ ok: false, error: error.message || 'Failed to generate invoice.' });
       }
     })();
-
     return true;
   }
 
@@ -80,7 +77,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function ensureDefaults() {
   try {
-    const existing = await chrome.storage.local.get([
+    const current = await chrome.storage.local.get([
       STORAGE_KEYS.CLIPBOARD_ITEMS,
       STORAGE_KEYS.INVOICE_COUNTERS,
       STORAGE_KEYS.THEME
@@ -88,24 +85,24 @@ async function ensureDefaults() {
 
     const defaults = {};
 
-    if (!Array.isArray(existing[STORAGE_KEYS.CLIPBOARD_ITEMS])) {
+    if (!Array.isArray(current[STORAGE_KEYS.CLIPBOARD_ITEMS])) {
       defaults[STORAGE_KEYS.CLIPBOARD_ITEMS] = [];
     }
 
-    if (!existing[STORAGE_KEYS.INVOICE_COUNTERS] || typeof existing[STORAGE_KEYS.INVOICE_COUNTERS] !== 'object') {
+    if (!current[STORAGE_KEYS.INVOICE_COUNTERS] || typeof current[STORAGE_KEYS.INVOICE_COUNTERS] !== 'object') {
       defaults[STORAGE_KEYS.INVOICE_COUNTERS] = {};
     }
 
-    if (typeof existing[STORAGE_KEYS.THEME] !== 'string') {
+    if (typeof current[STORAGE_KEYS.THEME] !== 'string') {
       defaults[STORAGE_KEYS.THEME] = 'light';
     }
 
-    if (Object.keys(defaults).length > 0) {
+    if (Object.keys(defaults).length) {
       await chrome.storage.local.set(defaults);
-      console.log('[SAC][BG] Defaults initialized:', Object.keys(defaults));
+      console.log('[SAC][BG] Defaults initialized:', defaults);
     }
   } catch (error) {
-    console.error('[SAC][BG] ensureDefaults failed:', error);
+    console.error('[SAC][BG] ensureDefaults error:', error);
   }
 }
 
@@ -115,49 +112,58 @@ async function getClipboardItems() {
   try {
     const result = await chrome.storage.local.get(STORAGE_KEYS.CLIPBOARD_ITEMS);
     const items = result[STORAGE_KEYS.CLIPBOARD_ITEMS];
-    return Array.isArray(items) ? items : [];
+    const normalized = Array.isArray(items) ? items : [];
+    console.log('[SAC][BG] Loaded clipboard items:', normalized.length);
+    return normalized;
   } catch (error) {
     console.error('[SAC][BG] getClipboardItems storage error:', error);
-    throw new Error('Storage read failed.');
+    throw new Error('Could not read storage.');
   }
 }
 
-async function saveClipboardText(rawText) {
+async function saveClipboardItem(rawText, source = 'unknown') {
   await ensureDefaults();
 
   const text = sanitizeText(rawText);
+
   if (!text) {
-    throw new Error('Empty clipboard text ignored.');
+    console.log('[SAC][BG] Skipped save (empty text) from', source);
+    return { saved: false, reason: 'empty' };
   }
 
-  const items = await getClipboardItems();
+  if (text.length < MIN_TEXT_LENGTH) {
+    console.log('[SAC][BG] Skipped save (too short) from', source, 'text:', text);
+    return { saved: false, reason: 'too_short' };
+  }
 
-  // Prevent duplicate consecutive entries exactly as requested.
-  if (items[0] && items[0].text === text) {
-    console.log('[SAC][BG] Consecutive duplicate ignored');
-    return { skipped: true, reason: 'duplicate_consecutive' };
+  const existing = await getClipboardItems();
+
+  if (existing[0] && existing[0].text === text) {
+    console.log('[SAC][BG] Skipped save (duplicate consecutive) from', source);
+    return { saved: false, reason: 'duplicate_consecutive' };
   }
 
   const now = Date.now();
-  const nextItem = {
+  const item = {
     id: `clip_${now}_${Math.random().toString(16).slice(2, 8)}`,
     text,
     pinned: false,
-    createdAt: now
+    createdAt: now,
+    source
   };
 
-  const merged = [nextItem, ...items];
-  const pinned = merged.filter((item) => item?.pinned);
-  const unpinned = merged.filter((item) => !item?.pinned);
-  const trimmed = [...pinned, ...unpinned].slice(0, MAX_CLIPBOARD_ITEMS);
+  const merged = [item, ...existing];
+  const pinned = merged.filter((entry) => entry?.pinned);
+  const unpinned = merged.filter((entry) => !entry?.pinned);
+  const finalList = [...pinned, ...unpinned].slice(0, MAX_ITEMS);
 
   try {
-    await chrome.storage.local.set({ [STORAGE_KEYS.CLIPBOARD_ITEMS]: trimmed });
-    console.log('[SAC][BG] Clipboard item saved. Total:', trimmed.length);
-    return { skipped: false, item: nextItem };
+    await chrome.storage.local.set({ [STORAGE_KEYS.CLIPBOARD_ITEMS]: finalList });
+    console.log('[SAC][BG] Storage updated. Total items:', finalList.length);
+    return { saved: true, item };
   } catch (error) {
-    console.error('[SAC][BG] saveClipboardText storage write error:', error);
-    throw new Error('Storage write failed.');
+    console.error('[SAC][BG] saveClipboardItem storage write error:', error);
+    throw new Error('Could not write storage.');
   }
 }
 
@@ -166,19 +172,18 @@ async function generateInvoiceNumber() {
 
   try {
     const result = await chrome.storage.local.get(STORAGE_KEYS.INVOICE_COUNTERS);
-    const invoiceCounters = result[STORAGE_KEYS.INVOICE_COUNTERS] || {};
+    const counters = result[STORAGE_KEYS.INVOICE_COUNTERS] || {};
 
-    const today = formatDateKey(new Date());
-    const nextCounter = Number(invoiceCounters[today] || 0) + 1;
-    invoiceCounters[today] = nextCounter;
+    const dateKey = formatDateKey(new Date());
+    counters[dateKey] = Number(counters[dateKey] || 0) + 1;
 
-    await chrome.storage.local.set({ [STORAGE_KEYS.INVOICE_COUNTERS]: invoiceCounters });
+    await chrome.storage.local.set({ [STORAGE_KEYS.INVOICE_COUNTERS]: counters });
 
-    const invoice = `INV-${today}-${String(nextCounter).padStart(3, '0')}`;
+    const invoice = `INV-${dateKey}-${String(counters[dateKey]).padStart(3, '0')}`;
     console.log('[SAC][BG] Invoice generated:', invoice);
     return invoice;
   } catch (error) {
-    console.error('[SAC][BG] generateInvoiceNumber storage error:', error);
+    console.error('[SAC][BG] generateInvoiceNumber error:', error);
     throw new Error('Invoice generation failed.');
   }
 }

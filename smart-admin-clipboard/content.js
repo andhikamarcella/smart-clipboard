@@ -1,50 +1,55 @@
-// Smart Admin Clipboard - content script
-// Captures copy events and forwards selected text to service worker.
+// Smart Admin Clipboard - Content Script
+// Clipboard capture path A: automatic listener via copy events.
 
 (() => {
   const LOG_PREFIX = '[SAC][CONTENT]';
-  let isBound = false;
+  let isInitialized = false;
 
   function init() {
-    if (isBound) {
-      return;
-    }
+    if (isInitialized) return;
+    isInitialized = true;
 
-    isBound = true;
-    document.addEventListener('copy', onCopy, { capture: true });
-    console.log(LOG_PREFIX, 'Copy listener attached on', window.location.href);
+    console.log(LOG_PREFIX, 'Loaded at:', window.location.href);
+    document.addEventListener('copy', onCopyEvent, { capture: true });
+    console.log(LOG_PREFIX, 'copy listener attached');
   }
 
-  async function onCopy() {
+  async function onCopyEvent(event) {
     try {
-      // Required by spec: use window.getSelection().toString()
-      const selectedText = window.getSelection().toString();
-      const text = sanitizeText(selectedText);
+      console.log(LOG_PREFIX, 'copy event fired');
+
+      // Required method: capture selected text via Selection API.
+      const fromSelection = window.getSelection().toString();
+      const fromClipboardData = event?.clipboardData?.getData?.('text/plain') || '';
+      const text = sanitizeText(fromClipboardData || fromSelection);
 
       if (!text) {
-        console.log(LOG_PREFIX, 'Copy ignored: empty selection');
+        console.log(LOG_PREFIX, 'skip save (empty)');
         return;
       }
 
-      console.log(LOG_PREFIX, 'Copy captured:', text.slice(0, 80));
+      if (text.length < 2) {
+        console.log(LOG_PREFIX, 'skip save (length < 2)');
+        return;
+      }
+
+      console.log(LOG_PREFIX, 'sending SAVE_CLIPBOARD message:', text.slice(0, 100));
 
       const response = await chrome.runtime.sendMessage({
         type: 'SAVE_CLIPBOARD',
-        payload: { text, url: window.location.href }
+        payload: {
+          text,
+          source: 'content'
+        }
       });
 
       if (response?.ok) {
-        if (response.data?.skipped) {
-          console.log(LOG_PREFIX, 'Skipped save:', response.data.reason);
-        } else {
-          console.log(LOG_PREFIX, 'Saved successfully');
-        }
+        console.log(LOG_PREFIX, 'background response:', response.data);
       } else {
-        console.warn(LOG_PREFIX, 'Save failed:', response?.error || 'Unknown error');
+        console.warn(LOG_PREFIX, 'background error:', response?.error || 'unknown');
       }
     } catch (error) {
-      // Never throw from content script event listeners.
-      console.error(LOG_PREFIX, 'Copy handler error:', error);
+      console.error(LOG_PREFIX, 'onCopyEvent error:', error);
     }
   }
 

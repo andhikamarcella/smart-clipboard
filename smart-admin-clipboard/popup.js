@@ -3,15 +3,15 @@ const STORAGE_KEYS = {
   THEME: 'theme'
 };
 
-const MAX_CLIPBOARD_ITEMS = 50;
+const MAX_ITEMS = 50;
 
 const EMAIL_TEMPLATES = {
   paymentReminder:
-    'Subject: Friendly Payment Reminder\n\nHello [Name],\n\nThis is a kind reminder that invoice [Invoice #] is due on [Date]. Please confirm once paid.\n\nBest regards,\n[Your Name]',
+    'Subject: Friendly Payment Reminder\n\nHello [Name],\n\nThis is a reminder that invoice [Invoice #] is due on [Date]. Kindly confirm once paid.\n\nBest regards,\n[Your Name]',
   interviewInvitation:
-    'Subject: Interview Invitation\n\nHi [Candidate Name],\n\nWe would like to invite you for an interview for the [Role] position at [Date/Time]. Please confirm availability.\n\nRegards,\n[Hiring Team]',
+    'Subject: Interview Invitation\n\nHi [Candidate Name],\n\nWe would like to invite you for an interview for the [Role] position on [Date/Time]. Please confirm your availability.\n\nRegards,\n[Hiring Team]',
   orderConfirmation:
-    'Subject: Order Confirmation\n\nHello [Customer Name],\n\nThank you for your order #[Order ID]. Your order has been confirmed and is now being prepared.\n\nBest,\n[Support Team]'
+    'Subject: Order Confirmation\n\nHello [Customer Name],\n\nThank you for your order #[Order ID]. We have confirmed your order and started processing it.\n\nBest,\n[Support Team]'
 };
 
 const state = {
@@ -21,30 +21,28 @@ const state = {
 };
 
 const el = {};
-let storageChangeHandler = null;
+let storageListener = null;
 
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
+  console.log('[SAC][POPUP] init');
   mapElements();
-  bindTabEvents();
-  bindBaseEvents();
-  bindAdminToolsEvents();
-  bindKeyboardShortcuts();
+  bindEvents();
+  bindAdminTools();
+  bindShortcuts();
   bindStorageSync();
 
   await hydrateTheme();
-  await loadClipboardItems();
+  await loadClipboardHistory();
 
   renderClipboard();
-  renderTemplateButtons();
+  renderTemplates();
   updateCalculator();
 }
 
 window.addEventListener('unload', () => {
-  if (storageChangeHandler) {
-    chrome.storage.onChanged.removeListener(storageChangeHandler);
-  }
+  if (storageListener) chrome.storage.onChanged.removeListener(storageListener);
 });
 
 function mapElements() {
@@ -59,6 +57,8 @@ function mapElements() {
     clearAllBtn: document.getElementById('clearAllBtn'),
     exportBtn: document.getElementById('exportBtn'),
     importInput: document.getElementById('importInput'),
+    testReadClipboardBtn: document.getElementById('testReadClipboardBtn'),
+    clipboardReadResult: document.getElementById('clipboardReadResult'),
     clipboardList: document.getElementById('clipboardList'),
     emptyState: document.getElementById('emptyState'),
     priceInput: document.getElementById('priceInput'),
@@ -75,13 +75,9 @@ function mapElements() {
   });
 }
 
-function bindTabEvents() {
-  el.tabs.forEach((tab) => {
-    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
-  });
-}
+function bindEvents() {
+  el.tabs.forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.tab)));
 
-function bindBaseEvents() {
   el.themeToggle.addEventListener('click', toggleTheme);
 
   el.searchInput.addEventListener('input', (event) => {
@@ -99,17 +95,17 @@ function bindBaseEvents() {
 
   el.exportBtn.addEventListener('click', exportClipboardJson);
   el.importInput.addEventListener('change', importClipboardJson);
+
+  el.testReadClipboardBtn.addEventListener('click', onManualClipboardRead);
 }
 
-function bindAdminToolsEvents() {
-  [el.priceInput, el.discountInput, el.taxInput].forEach((input) => {
-    input.addEventListener('input', updateCalculator);
-  });
+function bindAdminTools() {
+  [el.priceInput, el.discountInput, el.taxInput].forEach((input) => input.addEventListener('input', updateCalculator));
 
   el.generateInvoiceBtn.addEventListener('click', async () => {
     const response = await chrome.runtime.sendMessage({ type: 'GENERATE_INVOICE' });
     if (!response?.ok) {
-      toast(response?.error || 'Could not generate invoice', 'error');
+      toast(response?.error || 'Failed to generate invoice', 'error');
       return;
     }
 
@@ -132,71 +128,64 @@ function bindAdminToolsEvents() {
       toast('Template is empty', 'error');
       return;
     }
-
     await copyToClipboard(text, 'Template copied');
   });
 }
 
-function bindKeyboardShortcuts() {
+function bindShortcuts() {
   document.addEventListener('keydown', async (event) => {
-    const ctrlOrCmd = event.ctrlKey || event.metaKey;
+    const cmdOrCtrl = event.ctrlKey || event.metaKey;
 
-    if (ctrlOrCmd && event.key.toLowerCase() === 'f') {
+    if (cmdOrCtrl && event.key.toLowerCase() === 'f') {
       event.preventDefault();
       switchTab('clipboard');
       el.searchInput.focus();
       el.searchInput.select();
-      return;
     }
 
-    if (ctrlOrCmd && event.key === '1') {
+    if (cmdOrCtrl && event.key === '1') {
       event.preventDefault();
       switchTab('clipboard');
-      return;
     }
 
-    if (ctrlOrCmd && event.key === '2') {
+    if (cmdOrCtrl && event.key === '2') {
       event.preventDefault();
       switchTab('admin');
-      return;
     }
 
-    if (!ctrlOrCmd && event.key.toLowerCase() === 't') {
+    if (!cmdOrCtrl && event.key.toLowerCase() === 't') {
       toggleTheme();
-      return;
     }
 
-    if (ctrlOrCmd && event.shiftKey && event.key.toLowerCase() === 'c') {
-      if (state.activeTab === 'admin' && el.templatePreview.value.trim()) {
-        event.preventDefault();
-        await copyToClipboard(el.templatePreview.value.trim(), 'Template copied');
-      }
+    if (cmdOrCtrl && event.shiftKey && event.key.toLowerCase() === 'v') {
+      event.preventDefault();
+      await onManualClipboardRead();
     }
   });
 }
 
 function bindStorageSync() {
-  storageChangeHandler = (changes, areaName) => {
+  storageListener = (changes, areaName) => {
     if (areaName !== 'local') return;
+    if (!changes[STORAGE_KEYS.CLIPBOARD_ITEMS]) return;
 
-    if (changes[STORAGE_KEYS.CLIPBOARD_ITEMS]) {
-      const oldValue = Array.isArray(changes[STORAGE_KEYS.CLIPBOARD_ITEMS].oldValue)
-        ? changes[STORAGE_KEYS.CLIPBOARD_ITEMS].oldValue
-        : [];
-      const newValue = Array.isArray(changes[STORAGE_KEYS.CLIPBOARD_ITEMS].newValue)
-        ? changes[STORAGE_KEYS.CLIPBOARD_ITEMS].newValue
-        : [];
+    const oldValue = Array.isArray(changes[STORAGE_KEYS.CLIPBOARD_ITEMS].oldValue)
+      ? changes[STORAGE_KEYS.CLIPBOARD_ITEMS].oldValue
+      : [];
+    const newValue = Array.isArray(changes[STORAGE_KEYS.CLIPBOARD_ITEMS].newValue)
+      ? changes[STORAGE_KEYS.CLIPBOARD_ITEMS].newValue
+      : [];
 
-      state.clipboardItems = newValue;
-      renderClipboard();
+    console.log('[SAC][POPUP] storage update detected old/new:', oldValue.length, newValue.length);
+    state.clipboardItems = newValue;
+    renderClipboard();
 
-      if (newValue.length > oldValue.length) {
-        toast('New clipboard item saved', 'success');
-      }
+    if (newValue.length > oldValue.length) {
+      toast('Clipboard item saved', 'success');
     }
   };
 
-  chrome.storage.onChanged.addListener(storageChangeHandler);
+  chrome.storage.onChanged.addListener(storageListener);
 }
 
 function switchTab(tabName) {
@@ -231,53 +220,95 @@ function applyTheme(theme) {
   el.themeToggle.textContent = theme === 'dark' ? '☀️' : '🌙';
 }
 
-async function loadClipboardItems() {
+async function loadClipboardHistory() {
   try {
     const response = await chrome.runtime.sendMessage({ type: 'GET_CLIPBOARD_HISTORY' });
     if (response?.ok && Array.isArray(response.data)) {
       state.clipboardItems = response.data;
+      console.log('[SAC][POPUP] loaded from background:', state.clipboardItems.length);
       return;
     }
+  } catch (error) {
+    console.warn('[SAC][POPUP] background history fetch failed:', error);
+  }
 
+  try {
     const fallback = await chrome.storage.local.get(STORAGE_KEYS.CLIPBOARD_ITEMS);
     state.clipboardItems = Array.isArray(fallback[STORAGE_KEYS.CLIPBOARD_ITEMS])
       ? fallback[STORAGE_KEYS.CLIPBOARD_ITEMS]
       : [];
-  } catch (_error) {
+    console.log('[SAC][POPUP] loaded from storage fallback:', state.clipboardItems.length);
+  } catch (error) {
+    console.error('[SAC][POPUP] fallback storage load failed:', error);
     state.clipboardItems = [];
+  }
+}
+
+async function onManualClipboardRead() {
+  try {
+    const raw = await navigator.clipboard.readText();
+    const text = sanitizeText(raw);
+
+    el.clipboardReadResult.textContent = `Last read: ${text || '(empty)'}`;
+    console.log('[SAC][POPUP] manual read text:', text);
+
+    if (!text || text.length < 2) {
+      toast('Clipboard empty or too short (<2 chars)', 'error');
+      return;
+    }
+
+    const response = await chrome.runtime.sendMessage({
+      type: 'SAVE_CLIPBOARD',
+      payload: {
+        text,
+        source: 'popup_manual'
+      }
+    });
+
+    if (!response?.ok) {
+      toast(response?.error || 'Failed to save clipboard', 'error');
+      return;
+    }
+
+    if (response.data?.saved) {
+      toast('Manual clipboard read saved', 'success');
+    } else {
+      toast(`Manual read skipped: ${response.data?.reason || 'not saved'}`, 'error');
+    }
+  } catch (error) {
+    console.error('[SAC][POPUP] manual clipboard read failed:', error);
+    el.clipboardReadResult.textContent = `Last read: Error (${error.message})`;
+    toast('Clipboard read blocked. Grant clipboard permissions.', 'error');
   }
 }
 
 async function persistClipboardItems() {
   const pinned = state.clipboardItems.filter((item) => item.pinned);
   const unpinned = state.clipboardItems.filter((item) => !item.pinned);
-  state.clipboardItems = [...pinned, ...unpinned].slice(0, MAX_CLIPBOARD_ITEMS);
+  state.clipboardItems = [...pinned, ...unpinned].slice(0, MAX_ITEMS);
 
   await chrome.storage.local.set({ [STORAGE_KEYS.CLIPBOARD_ITEMS]: state.clipboardItems });
 }
 
 function renderClipboard() {
-  const query = state.search;
-  const items = state.clipboardItems.filter((item) => item.text.toLowerCase().includes(query));
-
+  const filtered = state.clipboardItems.filter((item) => item.text.toLowerCase().includes(state.search));
   el.clipboardList.innerHTML = '';
 
-  if (items.length === 0) {
+  if (!filtered.length) {
     el.emptyState.classList.remove('hidden');
     return;
   }
 
   el.emptyState.classList.add('hidden');
 
-  for (const item of items) {
-    const card = document.createElement('article');
-    card.className = `item ${item.pinned ? 'pinned' : ''}`;
-
-    card.innerHTML = `
+  filtered.forEach((item) => {
+    const node = document.createElement('article');
+    node.className = `item ${item.pinned ? 'pinned' : ''}`;
+    node.innerHTML = `
       <p class="item-text"></p>
       <div class="item-meta">
-        <span>${item.pinned ? '📌 Pinned' : '📄 Clipboard'}</span>
-        <time>${formatTimestamp(item.createdAt)}</time>
+        <span>${item.pinned ? '📌 Pinned' : '📄 Clipboard'}${item.source ? ` • ${item.source}` : ''}</span>
+        <time>${formatTime(item.createdAt)}</time>
       </div>
       <div class="item-actions">
         <button data-action="copy">Copy</button>
@@ -286,28 +317,49 @@ function renderClipboard() {
       </div>
     `;
 
-    card.querySelector('.item-text').textContent = truncate(item.text, 180);
+    node.querySelector('.item-text').textContent = truncate(item.text, 180);
 
-    card.querySelector('[data-action="copy"]').addEventListener('click', async () => {
+    node.querySelector('[data-action="copy"]').addEventListener('click', async () => {
       await copyToClipboard(item.text, 'Copied to clipboard');
     });
 
-    card.querySelector('[data-action="pin"]').addEventListener('click', async () => {
+    node.querySelector('[data-action="pin"]').addEventListener('click', async () => {
       item.pinned = !item.pinned;
       await persistClipboardItems();
       renderClipboard();
       toast(item.pinned ? 'Item pinned' : 'Item unpinned', 'success');
     });
 
-    card.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+    node.querySelector('[data-action="delete"]').addEventListener('click', async () => {
       state.clipboardItems = state.clipboardItems.filter((entry) => entry.id !== item.id);
       await persistClipboardItems();
       renderClipboard();
       toast('Item deleted', 'success');
     });
 
-    el.clipboardList.appendChild(card);
-  }
+    el.clipboardList.appendChild(node);
+  });
+}
+
+function renderTemplates() {
+  const labels = {
+    paymentReminder: 'Payment Reminder',
+    interviewInvitation: 'Interview Invitation',
+    orderConfirmation: 'Order Confirmation'
+  };
+
+  Object.entries(labels).forEach(([key, label]) => {
+    const button = document.createElement('button');
+    button.className = 'ghost-btn';
+    button.textContent = label;
+    button.addEventListener('click', () => {
+      el.templatePreview.value = EMAIL_TEMPLATES[key];
+      toast(`${label} loaded`, 'success');
+    });
+    el.templateButtons.appendChild(button);
+  });
+
+  el.templatePreview.value = EMAIL_TEMPLATES.paymentReminder;
 }
 
 function updateCalculator() {
@@ -327,37 +379,17 @@ function updateCalculator() {
   el.calcResult.style.color = 'var(--success)';
 }
 
-function renderTemplateButtons() {
-  const labels = {
-    paymentReminder: 'Payment Reminder',
-    interviewInvitation: 'Interview Invitation',
-    orderConfirmation: 'Order Confirmation'
-  };
-
-  for (const [key, label] of Object.entries(labels)) {
-    const button = document.createElement('button');
-    button.className = 'ghost-btn';
-    button.textContent = label;
-    button.addEventListener('click', () => {
-      el.templatePreview.value = EMAIL_TEMPLATES[key];
-      toast(`${label} loaded`, 'success');
-    });
-    el.templateButtons.appendChild(button);
-  }
-
-  el.templatePreview.value = EMAIL_TEMPLATES.paymentReminder;
-}
-
 function exportClipboardJson() {
   const blob = new Blob([JSON.stringify(state.clipboardItems, null, 2)], {
     type: 'application/json'
   });
-
   const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = 'smart-admin-clipboard-history.json';
-  link.click();
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'smart-admin-clipboard-history.json';
+  a.click();
+
   URL.revokeObjectURL(url);
   toast('Clipboard exported', 'success');
 }
@@ -370,20 +402,20 @@ async function importClipboardJson(event) {
     const text = await file.text();
     const parsed = JSON.parse(text);
 
-    if (!Array.isArray(parsed)) {
-      throw new Error('JSON must be an array.');
-    }
+    if (!Array.isArray(parsed)) throw new Error('JSON must be an array');
 
     const validated = parsed
       .map((item) => ({
         id: typeof item.id === 'string' ? item.id : `clip_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-        text: String(item.text || '').replace(/\s+/g, ' ').trim().slice(0, 5000),
+        text: sanitizeText(item.text),
         pinned: Boolean(item.pinned),
-        createdAt: Number(item.createdAt) || Date.now()
+        createdAt: Number(item.createdAt) || Date.now(),
+        source: typeof item.source === 'string' ? item.source : 'imported'
       }))
-      .filter((item) => item.text);
+      .filter((item) => item.text && item.text.length >= 2)
+      .slice(0, MAX_ITEMS);
 
-    state.clipboardItems = validated.slice(0, MAX_CLIPBOARD_ITEMS);
+    state.clipboardItems = validated;
     await persistClipboardItems();
     renderClipboard();
     toast('Clipboard imported', 'success');
@@ -396,18 +428,16 @@ async function importClipboardJson(event) {
 
 function parseNumber(value, { min = -Infinity, max = Infinity } = {}) {
   if (value === '') return 0;
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < min || number > max) {
-    return null;
-  }
-  return number;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < min || n > max) return null;
+  return n;
 }
 
-function formatTimestamp(timestamp) {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return 'Unknown time';
+function formatTime(timestamp) {
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return 'Unknown time';
 
-  return date.toLocaleString([], {
+  return d.toLocaleString([], {
     year: 'numeric',
     month: 'short',
     day: '2-digit',
@@ -416,8 +446,15 @@ function formatTimestamp(timestamp) {
   });
 }
 
-function truncate(text, maxLength) {
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+function sanitizeText(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 5000);
+}
+
+function truncate(text, max) {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 async function copyToClipboard(text, successMessage) {
@@ -425,7 +462,7 @@ async function copyToClipboard(text, successMessage) {
     await navigator.clipboard.writeText(text);
     toast(successMessage, 'success');
   } catch (_error) {
-    toast('Copy failed. Check clipboard permission.', 'error');
+    toast('Copy failed. Check clipboard permissions.', 'error');
   }
 }
 
