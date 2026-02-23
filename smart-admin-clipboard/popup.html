@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Admin Clipboard</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="app-header">
+        <h1>📋 Smart Admin Clipboard</h1>
+        <button id="themeToggle" class="icon-btn" title="Toggle theme (T)">🌙</button>
+      </header>
+
+      <nav class="tabs" role="tablist">
+        <button class="tab-btn active" role="tab" data-tab="clipboard" aria-selected="true">Clipboard</button>
+        <button class="tab-btn" role="tab" data-tab="admin" aria-selected="false">Admin Tools</button>
+      </nav>
+
+      <main>
+        <section class="tab-panel active" id="clipboardPanel" role="tabpanel">
+          <div class="toolbar">
+            <input id="searchInput" type="search" placeholder="Search history... (Ctrl/Cmd+F)" />
+            <button id="clearAllBtn" class="ghost-btn">Clear All</button>
+          </div>
+
+          <div class="toolbar toolbar-secondary">
+            <button id="exportBtn" class="ghost-btn">Export JSON</button>
+            <label class="ghost-btn import-btn" for="importInput">Import JSON</label>
+            <input id="importInput" type="file" accept="application/json" hidden />
+          </div>
+
+          <div id="clipboardList" class="clipboard-list"></div>
+          <div id="emptyClipboard" class="empty-state hidden">
+            <div class="illustration"></div>
+            <h3>No clipboard history yet</h3>
+            <p>Copy any text on a webpage and it will appear here.</p>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="adminPanel" role="tabpanel">
+          <div class="card">
+            <h2>💸 Discount & Tax Calculator</h2>
+            <div class="grid-3">
+              <label>
+                Price
+                <input type="number" id="priceInput" min="0" step="0.01" placeholder="0.00" />
+              </label>
+              <label>
+                Discount %
+                <input type="number" id="discountInput" min="0" max="100" step="0.01" placeholder="0" />
+              </label>
+              <label>
+                Tax %
+                <input type="number" id="taxInput" min="0" max="100" step="0.01" placeholder="0" />
+              </label>
+            </div>
+            <p class="result" id="calcResult">Final Total: $0.00</p>
+          </div>
+
+          <div class="card">
+            <h2>🧾 Invoice Number Generator</h2>
+            <div class="inline-actions">
+              <input id="invoiceOutput" type="text" readonly placeholder="INV-YYYYMMDD-001" />
+              <button id="generateInvoiceBtn">Generate</button>
+              <button id="copyInvoiceBtn" class="ghost-btn">Copy</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>✉️ Quick Email Templates</h2>
+            <div class="template-buttons" id="templateButtons"></div>
+            <textarea id="templatePreview" rows="6" placeholder="Template preview and edit area..."></textarea>
+            <div class="inline-actions end">
+              <button id="copyTemplateBtn">Copy Template</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toastContainer" class="toast-container"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
